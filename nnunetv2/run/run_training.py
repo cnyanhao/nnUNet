@@ -87,6 +87,8 @@ def maybe_load_checkpoint(nnunet_trainer: nnUNetTrainer, continue_training: bool
     elif validation_only:
         expected_checkpoint_file = join(nnunet_trainer.output_folder, 'checkpoint_final.pth')
         if not isfile(expected_checkpoint_file):
+            expected_checkpoint_file = join(nnunet_trainer.output_folder, 'checkpoint_best.pth')
+        if not isfile(expected_checkpoint_file):
             raise RuntimeError(f"Cannot run validation because the training is not finished yet!")
     else:
         if pretrained_weights_file is not None:

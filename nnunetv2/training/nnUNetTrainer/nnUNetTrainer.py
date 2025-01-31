@@ -42,6 +42,8 @@ from torch._dynamo import OptimizedModule
 from torch.cuda import device_count
 from torch.cuda.amp import GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.nn.functional as F
+from sklearn.metrics import f1_score
 
 from nnunetv2.configuration import ANISO_THRESHOLD, default_num_processes
 from nnunetv2.evaluation.evaluate_predictions import compute_metrics_on_folder
@@ -237,6 +239,7 @@ class nnUNetTrainer(object):
 
     def _do_i_compile(self):
         # new default: compile is enabled!
+        return False
 
         # compile does not work on mps
         if self.device == torch.device('mps'):
@@ -979,6 +982,12 @@ class nnUNetTrainer(object):
         data = batch['data']
         target = batch['target']
 
+        # get labels from keys
+        labels = []
+        for key in batch['keys']:
+            labels.append(int(key.split('_')[1]))
+        labels = torch.tensor(labels).to(self.device, non_blocking=True)
+
         data = data.to(self.device, non_blocking=True)
         if isinstance(target, list):
             target = [i.to(self.device, non_blocking=True) for i in target]
@@ -991,9 +1000,10 @@ class nnUNetTrainer(object):
         # If the device_type is 'mps' then it will complain that mps is not implemented, even if enabled=False is set. Whyyyyyyy. (this is why we don't make use of enabled=False)
         # So autocast will only be active if we have a cuda device.
         with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
-            output = self.network(data)
+            output, cls_output = self.network(data)
             # del data
             l = self.loss(output, target)
+            l += F.cross_entropy(cls_output, labels)
 
         if self.grad_scaler is not None:
             self.grad_scaler.scale(l).backward()
@@ -1026,6 +1036,12 @@ class nnUNetTrainer(object):
         data = batch['data']
         target = batch['target']
 
+        # get labels from keys
+        labels = []
+        for key in batch['keys']:
+            labels.append(int(key.split('_')[1]))
+        labels = torch.tensor(labels).to(self.device, non_blocking=True)
+
         data = data.to(self.device, non_blocking=True)
         if isinstance(target, list):
             target = [i.to(self.device, non_blocking=True) for i in target]
@@ -1037,9 +1053,10 @@ class nnUNetTrainer(object):
         # If the device_type is 'mps' then it will complain that mps is not implemented, even if enabled=False is set. Whyyyyyyy. (this is why we don't make use of enabled=False)
         # So autocast will only be active if we have a cuda device.
         with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
-            output = self.network(data)
+            output, cls_output = self.network(data)
             del data
             l = self.loss(output, target)
+            l += F.cross_entropy(cls_output, labels)
 
         # we only need the output with the highest output resolution (if DS enabled)
         if self.enable_deep_supervision:
@@ -1087,13 +1104,22 @@ class nnUNetTrainer(object):
             fp_hard = fp_hard[1:]
             fn_hard = fn_hard[1:]
 
-        return {'loss': l.detach().cpu().numpy(), 'tp_hard': tp_hard, 'fp_hard': fp_hard, 'fn_hard': fn_hard}
+        # macro f1 for classification task
+        cls_preds = cls_output.argmax(1).cpu().numpy().tolist()
+        cls_labels = labels.cpu().numpy().tolist()
+        # import pdb; pdb.set_trace()
+        # f1_macro = f1_score(labels.cpu().numpy(), cls_pred.cpu().numpy(), average='macro')
+
+        return {'loss': l.detach().cpu().numpy(), 'tp_hard': tp_hard, 'fp_hard': fp_hard, 'fn_hard': fn_hard, 'cls_preds': cls_preds, 'cls_labels': cls_labels}
 
     def on_validation_epoch_end(self, val_outputs: List[dict]):
         outputs_collated = collate_outputs(val_outputs)
         tp = np.sum(outputs_collated['tp_hard'], 0)
         fp = np.sum(outputs_collated['fp_hard'], 0)
         fn = np.sum(outputs_collated['fn_hard'], 0)
+        cls_preds = outputs_collated['cls_preds']
+        cls_labels = outputs_collated['cls_labels']
+        f1_macro = f1_score(cls_labels, cls_preds, average='macro')
 
         if self.is_ddp:
             world_size = dist.get_world_size()
@@ -1121,6 +1147,7 @@ class nnUNetTrainer(object):
         self.logger.log('mean_fg_dice', mean_fg_dice, self.current_epoch)
         self.logger.log('dice_per_class_or_region', global_dc_per_class, self.current_epoch)
         self.logger.log('val_losses', loss_here, self.current_epoch)
+        self.logger.log('f1_macro', f1_macro, self.current_epoch)
 
     def on_epoch_start(self):
         self.logger.log('epoch_start_timestamps', time(), self.current_epoch)
@@ -1132,6 +1159,7 @@ class nnUNetTrainer(object):
         self.print_to_log_file('val_loss', np.round(self.logger.my_fantastic_logging['val_losses'][-1], decimals=4))
         self.print_to_log_file('Pseudo dice', [np.round(i, decimals=4) for i in
                                                self.logger.my_fantastic_logging['dice_per_class_or_region'][-1]])
+        self.print_to_log_file('F1 macro', np.round(self.logger.my_fantastic_logging['f1_macro'][-1], decimals=4))
         self.print_to_log_file(
             f"Epoch time: {np.round(self.logger.my_fantastic_logging['epoch_end_timestamps'][-1] - self.logger.my_fantastic_logging['epoch_start_timestamps'][-1], decimals=2)} s")
 
