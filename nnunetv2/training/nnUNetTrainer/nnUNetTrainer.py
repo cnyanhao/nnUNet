@@ -40,7 +40,8 @@ from torch import autocast, nn
 from torch import distributed as dist
 from torch._dynamo import OptimizedModule
 from torch.cuda import device_count
-from torch.cuda.amp import GradScaler
+# from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.nn.functional as F
 from sklearn.metrics import f1_score
@@ -163,7 +164,7 @@ class nnUNetTrainer(object):
         self.num_input_channels = None  # -> self.initialize()
         self.network = None  # -> self.build_network_architecture()
         self.optimizer = self.lr_scheduler = None  # -> self.initialize
-        self.grad_scaler = GradScaler() if self.device.type == 'cuda' else None
+        self.grad_scaler = GradScaler('cuda') if self.device.type == 'cuda' else None
         self.loss = None  # -> self.initialize
 
         ### Simple logging. Don't take that away from me!
@@ -1209,7 +1210,7 @@ class nnUNetTrainer(object):
             self.initialize()
 
         if isinstance(filename_or_checkpoint, str):
-            checkpoint = torch.load(filename_or_checkpoint, map_location=self.device)
+            checkpoint = torch.load(filename_or_checkpoint, map_location=self.device, weights_only=False)
         # if state dict comes from nn.DataParallel but we use non-parallel model here then the state dict keys do not
         # match. Use heuristic to make it match
         new_state_dict = {}

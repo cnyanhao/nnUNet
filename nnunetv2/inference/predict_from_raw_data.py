@@ -540,7 +540,7 @@ class nnUNetPredictor(object):
 
     def _internal_maybe_mirror_and_predict(self, x: torch.Tensor) -> torch.Tensor:
         mirror_axes = self.allowed_mirroring_axes if self.use_mirroring else None
-        prediction = self.network(x)
+        prediction = self.network(x)[0]
 
         if mirror_axes is not None:
             # check for invalid numbers in mirror_axes
@@ -552,7 +552,7 @@ class nnUNetPredictor(object):
                 c for i in range(len(mirror_axes)) for c in itertools.combinations(mirror_axes, i + 1)
             ]
             for axes in axes_combinations:
-                prediction += torch.flip(self.network(torch.flip(x, axes)), axes)
+                prediction += torch.flip(self.network(torch.flip(x, axes))[0], axes)
             prediction /= (len(axes_combinations) + 1)
         return prediction
 
