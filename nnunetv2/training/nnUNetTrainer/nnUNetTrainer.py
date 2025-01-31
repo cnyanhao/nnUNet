@@ -73,7 +73,7 @@ from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
 
 
 class nnUNetTrainer(object):
-    def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict, unpack_dataset: bool = True,
+    def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict, unpack_dataset: bool = True, cls_only: bool = False,
                  device: torch.device = torch.device('cuda')):
         # From https://grugbrain.dev/. Worth a read ya big brains ;-)
 
@@ -123,6 +123,7 @@ class nnUNetTrainer(object):
         self.dataset_json = dataset_json
         self.fold = fold
         self.unpack_dataset = unpack_dataset
+        self.cls_only = cls_only
 
         ### Setting all the folder names. We need to make sure things don't crash in case we are just running
         # inference and some of the folders may not be defined!
@@ -182,6 +183,7 @@ class nnUNetTrainer(object):
 
         ### initializing stuff for remembering things and such
         self._best_ema = None
+        self._best_f1 = None
 
         ### inference things
         self.inference_allowed_mirroring_axes = None  # this variable is set in
@@ -222,6 +224,14 @@ class nnUNetTrainer(object):
             if self._do_i_compile():
                 self.print_to_log_file('Using torch.compile...')
                 self.network = torch.compile(self.network)
+
+            if self.cls_only:
+                for params in self.network.encoder.parameters():
+                    params.requires_grad = False
+                for params in self.network.decoder.parameters():
+                    params.requires_grad = False
+                for params in self.network.classifier.parameters():
+                    params.requires_grad = True
 
             self.optimizer, self.lr_scheduler = self.configure_optimizers()
             # if ddp, wrap in DDP wrapper
@@ -1003,8 +1013,11 @@ class nnUNetTrainer(object):
         with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
             output, cls_output = self.network(data)
             # del data
-            l = self.loss(output, target)
-            l += F.cross_entropy(cls_output, labels)
+            if self.cls_only:
+                l = F.cross_entropy(cls_output, labels)
+            else:
+                l = self.loss(output, target)
+                l += F.cross_entropy(cls_output, labels)
 
         if self.grad_scaler is not None:
             self.grad_scaler.scale(l).backward()
@@ -1170,10 +1183,16 @@ class nnUNetTrainer(object):
             self.save_checkpoint(join(self.output_folder, 'checkpoint_latest.pth'))
 
         # handle 'best' checkpointing. ema_fg_dice is computed by the logger and can be accessed like this
-        if self._best_ema is None or self.logger.my_fantastic_logging['ema_fg_dice'][-1] > self._best_ema:
-            self._best_ema = self.logger.my_fantastic_logging['ema_fg_dice'][-1]
-            self.print_to_log_file(f"Yayy! New best EMA pseudo Dice: {np.round(self._best_ema, decimals=4)}")
-            self.save_checkpoint(join(self.output_folder, 'checkpoint_best.pth'))
+        if self.cls_only:
+            if self._best_f1 is None or self.logger.my_fantastic_logging['f1_macro'][-1] > self._best_f1:
+                self._best_f1 = self.logger.my_fantastic_logging['f1_macro'][-1]
+                self.print_to_log_file(f"Yayy! New best F1 macro: {np.round(self._best_f1, decimals=4)}")
+                self.save_checkpoint(join(self.output_folder, 'checkpoint_best.pth'))
+        else:
+            if self._best_ema is None or self.logger.my_fantastic_logging['ema_fg_dice'][-1] > self._best_ema:
+                self._best_ema = self.logger.my_fantastic_logging['ema_fg_dice'][-1]
+                self.print_to_log_file(f"Yayy! New best EMA pseudo Dice: {np.round(self._best_ema, decimals=4)}")
+                self.save_checkpoint(join(self.output_folder, 'checkpoint_best.pth'))
 
         if self.local_rank == 0:
             self.logger.plot_progress_png(self.output_folder)

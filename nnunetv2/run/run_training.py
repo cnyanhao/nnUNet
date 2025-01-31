@@ -35,6 +35,7 @@ def get_trainer_from_args(dataset_name_or_id: Union[int, str],
                           trainer_name: str = 'nnUNetTrainer',
                           plans_identifier: str = 'nnUNetPlans',
                           use_compressed: bool = False,
+                          cls_only: bool = False,
                           device: torch.device = torch.device('cuda')):
     # load nnunet class and do sanity checks
     nnunet_trainer = recursive_find_python_class(join(nnunetv2.__path__[0], "training", "nnUNetTrainer"),
@@ -64,12 +65,12 @@ def get_trainer_from_args(dataset_name_or_id: Union[int, str],
     plans = load_json(plans_file)
     dataset_json = load_json(join(preprocessed_dataset_folder_base, 'dataset.json'))
     nnunet_trainer = nnunet_trainer(plans=plans, configuration=configuration, fold=fold,
-                                    dataset_json=dataset_json, unpack_dataset=not use_compressed, device=device)
+                                    dataset_json=dataset_json, unpack_dataset=not use_compressed, cls_only=cls_only, device=device)
     return nnunet_trainer
 
 
 def maybe_load_checkpoint(nnunet_trainer: nnUNetTrainer, continue_training: bool, validation_only: bool,
-                          pretrained_weights_file: str = None):
+                          pretrained_weights_file: str = None, cls_only: bool = False):
     if continue_training and pretrained_weights_file is not None:
         raise RuntimeError('Cannot both continue a training AND load pretrained weights. Pretrained weights can only '
                            'be used at the beginning of the training.')
@@ -90,6 +91,8 @@ def maybe_load_checkpoint(nnunet_trainer: nnUNetTrainer, continue_training: bool
             expected_checkpoint_file = join(nnunet_trainer.output_folder, 'checkpoint_best.pth')
         if not isfile(expected_checkpoint_file):
             raise RuntimeError(f"Cannot run validation because the training is not finished yet!")
+    elif cls_only:
+        expected_checkpoint_file = join(nnunet_trainer.output_folder, 'checkpoint_best.pth')
     else:
         if pretrained_weights_file is not None:
             if not nnunet_trainer.was_initialized:
@@ -150,6 +153,7 @@ def run_training(dataset_name_or_id: Union[str, int],
                  only_run_validation: bool = False,
                  disable_checkpointing: bool = False,
                  val_with_best: bool = False,
+                 cls_only: bool = False,
                  device: torch.device = torch.device('cuda')):
     if plans_identifier == 'nnUNetPlans':
         print("\n############################\n"
@@ -196,14 +200,14 @@ def run_training(dataset_name_or_id: Union[str, int],
                  join=True)
     else:
         nnunet_trainer = get_trainer_from_args(dataset_name_or_id, configuration, fold, trainer_class_name,
-                                               plans_identifier, use_compressed_data, device=device)
+                                               plans_identifier, use_compressed_data, cls_only, device=device)
 
         if disable_checkpointing:
             nnunet_trainer.disable_checkpointing = disable_checkpointing
 
         assert not (continue_training and only_run_validation), f'Cannot set --c and --val flag at the same time. Dummy.'
 
-        maybe_load_checkpoint(nnunet_trainer, continue_training, only_run_validation, pretrained_weights)
+        maybe_load_checkpoint(nnunet_trainer, continue_training, only_run_validation, pretrained_weights, cls_only)
 
         if torch.cuda.is_available():
             cudnn.deterministic = False
@@ -258,6 +262,8 @@ def run_training_entry():
                     help="Use this to set the device the training should run with. Available options are 'cuda' "
                          "(GPU), 'cpu' (CPU) and 'mps' (Apple M1/M2). Do NOT use this to set which GPU ID! "
                          "Use CUDA_VISIBLE_DEVICES=X nnUNetv2_train [...] instead!")
+    parser.add_argument('--cls_only', action='store_true', required=False,
+                        help='[OPTIONAL] Set this flag to only train the classifier.')
     args = parser.parse_args()
 
     assert args.device in ['cpu', 'cuda', 'mps'], f'-device must be either cpu, mps or cuda. Other devices are not tested/supported. Got: {args.device}.'
@@ -276,7 +282,7 @@ def run_training_entry():
 
     run_training(args.dataset_name_or_id, args.configuration, args.fold, args.tr, args.p, args.pretrained_weights,
                  args.num_gpus, args.use_compressed, args.npz, args.c, args.val, args.disable_checkpointing, args.val_best,
-                 device=device)
+                 args.cls_only, device=device)
 
 
 if __name__ == '__main__':
